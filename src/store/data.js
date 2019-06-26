@@ -10,6 +10,7 @@ import styledHtmlTemplate from '../data/templates/styledHtmlTemplate.html';
 import styledHtmlWithTocTemplate from '../data/templates/styledHtmlWithTocTemplate.html';
 import jekyllSiteTemplate from '../data/templates/jekyllSiteTemplate.html';
 import constants from '../data/constants';
+import features from '../data/features';
 
 const itemTemplate = (id, data = {}) => ({
   id,
@@ -34,17 +35,24 @@ const empty = (id) => {
 };
 
 // Item IDs that will be stored in the localStorage
-const lsItemIdSet = new Set(constants.localStorageDataIds);
+const localStorageIdSet = new Set(constants.localStorageDataIds);
 
 // Getter/setter/patcher factories
-const getter = id => state => ((lsItemIdSet.has(id)
-  ? state.lsItemsById
-  : state.itemsById)[id] || {}).data || empty(id).data;
+const getter = id => (state) => {
+  const itemsById = localStorageIdSet.has(id)
+    ? state.lsItemsById
+    : state.itemsById;
+  if (itemsById[id]) {
+    return itemsById[id].data;
+  }
+  return empty(id).data;
+};
 const setter = id => ({ commit }, data) => commit('setItem', itemTemplate(id, data));
 const patcher = id => ({ state, commit }, data) => {
-  const item = Object.assign(empty(id), (lsItemIdSet.has(id)
+  const itemsById = localStorageIdSet.has(id)
     ? state.lsItemsById
-    : state.itemsById)[id]);
+    : state.itemsById;
+  const item = Object.assign(empty(id), itemsById[id]);
   commit('setItem', {
     ...empty(id),
     data: typeof data === 'object' ? {
@@ -75,7 +83,7 @@ const makeAdditionalTemplate = (name, value, helpers = '\n') => ({
   helpers,
   isAdditional: true,
 });
-const additionalTemplates = {
+const defaultTemplates = {
   plainText: makeAdditionalTemplate('Plain text', '{{{files.0.content.text}}}'),
   plainHtml: makeAdditionalTemplate('Plain HTML', plainHtmlTemplate),
   styledHtml: makeAdditionalTemplate('Styled HTML', styledHtmlTemplate),
@@ -116,7 +124,7 @@ export default {
       });
 
       // Store item in itemsById or lsItemsById if its stored in the localStorage
-      Vue.set(lsItemIdSet.has(item.id) ? lsItemsById : itemsById, item.id, item);
+      Vue.set(localStorageIdSet.has(item.id) ? lsItemsById : itemsById, item.id, item);
     },
     deleteItem({ itemsById }, id) {
       // Only used by localDbSvc to clean itemsById from object moved to localStorage
@@ -153,7 +161,7 @@ export default {
     templatesById: getter('templates'),
     allTemplatesById: (state, { templatesById }) => ({
       ...templatesById,
-      ...additionalTemplates,
+      ...defaultTemplates,
     }),
     lastCreated: getter('lastCreated'),
     lastOpened: getter('lastOpened'),
@@ -196,6 +204,19 @@ export default {
     gitlabTokensBySub: (state, { tokensByType }) => tokensByType.gitlab || {},
     wordpressTokensBySub: (state, { tokensByType }) => tokensByType.wordpress || {},
     zendeskTokensBySub: (state, { tokensByType }) => tokensByType.zendesk || {},
+    badges: getter('badges'),
+    badgeTree: (state, { badges }) => features.map(feature => feature.toBadge(badges)),
+    allBadges: (state, { badgeTree }) => {
+      const result = [];
+      const processBadgeNodes = nodes => nodes.forEach((node) => {
+        result.push(node);
+        if (node.children) {
+          processBadgeNodes(node.children);
+        }
+      });
+      processBadgeNodes(badgeTree);
+      return result;
+    },
   },
   actions: {
     setSettings: setter('settings'),
@@ -238,7 +259,7 @@ export default {
         ...templatesById,
       };
       // We don't store additional templates
-      Object.keys(additionalTemplates).forEach((id) => {
+      Object.keys(defaultTemplates).forEach((id) => {
         delete templatesToCommit[id];
       });
       commit('setItem', itemTemplate('templates', templatesToCommit));
@@ -267,5 +288,6 @@ export default {
     addGitlabToken: tokenAdder('gitlab'),
     addWordpressToken: tokenAdder('wordpress'),
     addZendeskToken: tokenAdder('zendesk'),
+    patchBadges: patcher('badges'),
   },
 };

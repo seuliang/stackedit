@@ -2,12 +2,12 @@ import utils from '../../utils';
 import networkSvc from '../../networkSvc';
 import store from '../../../store';
 import userSvc from '../../userSvc';
+import badgeSvc from '../../badgeSvc';
 
 const clientId = GOOGLE_CLIENT_ID;
 const apiKey = 'AIzaSyC_M4RA9pY6XmM9pmFxlT59UPMO7aHr9kk';
 const appsDomain = null;
-const tokenExpirationMargin = 5 * 60 * 1000; // 5 min (Google tokens expire after 1h)
-let googlePlusNotification = true;
+const tokenExpirationMargin = 5 * 60 * 1000; // 5 min (tokens expire after 1h)
 
 const driveAppDataScopes = ['https://www.googleapis.com/auth/drive.appdata'];
 const getDriveScopes = token => [token.driveFullAccess
@@ -37,20 +37,21 @@ if (utils.queryParams.providerId === 'googleDrive') {
 }
 
 /**
- * https://developers.google.com/+/web/api/rest/latest/people/get
+ * https://developers.google.com/people/api/rest/v1/people/get
  */
 const getUser = async (sub, token) => {
-  const { body } = await networkSvc.request(token
+  const url = `https://people.googleapis.com/v1/people/${sub}?personFields=names,photos&key=${apiKey}`;
+  const { body } = await networkSvc.request(sub === 'me' && token
     ? {
       method: 'GET',
-      url: `https://www.googleapis.com/plus/v1/people/${sub}`,
+      url,
       headers: {
         Authorization: `Bearer ${token.accessToken}`,
       },
     }
     : {
       method: 'GET',
-      url: `https://www.googleapis.com/plus/v1/people/${sub}?key=${apiKey}`,
+      url,
     }, true);
   return body;
 };
@@ -60,10 +61,12 @@ userSvc.setInfoResolver('google', subPrefix, async (sub) => {
   try {
     const googleToken = Object.values(store.getters['data/googleTokensBySub'])[0];
     const body = await getUser(sub, googleToken);
+    const name = (body.names && body.names[0]) || {};
+    const photo = (body.photos && body.photos[0]) || {};
     return {
-      id: `${subPrefix}:${body.id}`,
-      name: body.displayName,
-      imageUrl: (body.image.url || '').replace(/\bsz?=\d+$/, 'sz=40'),
+      id: `${subPrefix}:${sub}`,
+      name: name.displayName,
+      imageUrl: (photo.url || '').replace(/\bsz?=\d+$/, 'sz=40'),
     };
   } catch (err) {
     if (err.status !== 404) {
@@ -148,29 +151,29 @@ export default {
       expiresOn: Date.now() + (expiresIn * 1000),
       idToken,
       sub: body.sub,
-      name: (existingToken || {}).name || 'Unknown',
+      name: (existingToken || {}).name || 'Someone',
       isLogin: !store.getters['workspace/mainWorkspaceToken'] &&
-        scopes.indexOf('https://www.googleapis.com/auth/drive.appdata') !== -1,
+        scopes.includes('https://www.googleapis.com/auth/drive.appdata'),
       isSponsor: false,
-      isDrive: scopes.indexOf('https://www.googleapis.com/auth/drive') !== -1 ||
-        scopes.indexOf('https://www.googleapis.com/auth/drive.file') !== -1,
-      isBlogger: scopes.indexOf('https://www.googleapis.com/auth/blogger') !== -1,
-      isPhotos: scopes.indexOf('https://www.googleapis.com/auth/photos') !== -1,
-      driveFullAccess: scopes.indexOf('https://www.googleapis.com/auth/drive') !== -1,
+      isDrive: scopes.includes('https://www.googleapis.com/auth/drive') ||
+        scopes.includes('https://www.googleapis.com/auth/drive.file'),
+      isBlogger: scopes.includes('https://www.googleapis.com/auth/blogger'),
+      isPhotos: scopes.includes('https://www.googleapis.com/auth/photos'),
+      driveFullAccess: scopes.includes('https://www.googleapis.com/auth/drive'),
     };
 
     // Call the user info endpoint
     const user = await getUser('me', token);
-    if (user.displayName) {
-      token.name = user.displayName;
-    } else if (googlePlusNotification) {
-      store.dispatch('notification/info', 'Please activate Google Plus to change your account name and photo.');
-      googlePlusNotification = false;
+    const userId = user.resourceName.split('/')[1];
+    const name = user.names[0] || {};
+    const photo = user.photos[0] || {};
+    if (name.displayName) {
+      token.name = name.displayName;
     }
-    userSvc.addInfo({
-      id: `${subPrefix}:${user.id}`,
-      name: user.displayName,
-      imageUrl: (user.image.url || '').replace(/\bsz?=\d+$/, 'sz=40'),
+    userSvc.addUserInfo({
+      id: `${subPrefix}:${userId}`,
+      name: name.displayName,
+      imageUrl: (photo.url || '').replace(/\bsz?=\d+$/, 'sz=40'),
     });
 
     if (existingToken) {
@@ -189,20 +192,24 @@ export default {
 
     if (token.isLogin) {
       try {
-        token.isSponsor = (await networkSvc.request({
+        const res = await networkSvc.request({
           method: 'GET',
           url: 'userInfo',
           params: {
             idToken: token.idToken,
           },
-        })).body.sponsorUntil > Date.now();
+        });
+        token.isSponsor = res.body.sponsorUntil > Date.now();
+        if (token.isSponsor) {
+          badgeSvc.addBadge('sponsor');
+        }
       } catch (err) {
         // Ignore
       }
     }
 
     // Add token to google tokens
-    store.dispatch('data/addGoogleToken', token);
+    await store.dispatch('data/addGoogleToken', token);
     return token;
   },
   async refreshToken(token, scopes = []) {
@@ -243,14 +250,20 @@ export default {
   signin() {
     return this.startOauth2(driveAppDataScopes);
   },
-  addDriveAccount(fullAccess = false, sub = null) {
-    return this.startOauth2(getDriveScopes({ driveFullAccess: fullAccess }), sub);
+  async addDriveAccount(fullAccess = false, sub = null) {
+    const token = await this.startOauth2(getDriveScopes({ driveFullAccess: fullAccess }), sub);
+    badgeSvc.addBadge('addGoogleDriveAccount');
+    return token;
   },
-  addBloggerAccount() {
-    return this.startOauth2(bloggerScopes);
+  async addBloggerAccount() {
+    const token = await this.startOauth2(bloggerScopes);
+    badgeSvc.addBadge('addBloggerAccount');
+    return token;
   },
-  addPhotosAccount() {
-    return this.startOauth2(photosScopes);
+  async addPhotosAccount() {
+    const token = await this.startOauth2(photosScopes);
+    badgeSvc.addBadge('addGooglePhotosAccount');
+    return token;
   },
   async getSponsorship(token) {
     const refreshedToken = await this.refreshToken(token);
@@ -294,10 +307,10 @@ export default {
         options.url = `https://www.googleapis.com/drive/v3/files/${fileId}`;
         if (parents && oldParents) {
           params.addParents = parents
-            .filter(parent => oldParents.indexOf(parent) === -1)
+            .filter(parent => !oldParents.includes(parent))
             .join(',');
           params.removeParents = oldParents
-            .filter(parent => parents.indexOf(parent) === -1)
+            .filter(parent => !parents.includes(parent))
             .join(',');
         }
       } else if (parents) {
@@ -455,7 +468,7 @@ export default {
         },
       });
       revisions.forEach((revision) => {
-        userSvc.addInfo({
+        userSvc.addUserInfo({
           id: `${subPrefix}:${revision.lastModifyingUser.permissionId}`,
           name: revision.lastModifyingUser.displayName,
           imageUrl: revision.lastModifyingUser.photoLink || '',

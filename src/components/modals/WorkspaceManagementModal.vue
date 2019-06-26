@@ -51,7 +51,7 @@
         </div>
       </div>
       <div class="modal__info">
-        <b>ProTip:</b> A workspace is accessible <b>offline</b> once it has been opened for the first time.
+        <b>ProTip:</b> Workspaces are accessible offline, try it!
       </div>
     </div>
     <div class="modal__button-bar">
@@ -65,6 +65,7 @@ import { mapGetters, mapActions } from 'vuex';
 import ModalInner from './common/ModalInner';
 import workspaceSvc from '../../services/workspaceSvc';
 import store from '../../store';
+import badgeSvc from '../../services/badgeSvc';
 
 export default {
   components: {
@@ -95,13 +96,14 @@ export default {
     submitEdit(cancel) {
       const workspace = this.workspacesById[this.editedId];
       if (workspace) {
-        if (!cancel && this.editingName) {
+        if (!cancel && this.editingName && this.editingName !== workspace.name) {
           store.dispatch('workspace/patchWorkspacesById', {
             [this.editedId]: {
               ...workspace,
               name: this.editingName,
             },
           });
+          badgeSvc.addBadge('renameWorkspace');
         } else {
           this.editingName = workspace.name;
         }
@@ -117,6 +119,7 @@ export default {
         try {
           await store.dispatch('modal/open', 'removeWorkspace');
           workspaceSvc.removeWorkspace(id);
+          badgeSvc.addBadge('removeWorkspace');
         } catch (e) { /* Cancel */ }
       }
     },
@@ -149,9 +152,7 @@ $small-button-size: 22px;
 }
 
 .workspace-entry__row {
-  margin-top: 1px;
-  padding-top: 1px;
-  border-top: 1px solid rgba(128, 128, 128, 0.15);
+  border-top: 1px solid $hr-color;
   line-height: $small-button-size;
 }
 
